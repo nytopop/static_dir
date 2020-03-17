@@ -40,6 +40,8 @@ pub use include_dir::{Dir, File};
 /// `CARGO_MANIFEST_DIR` environment variable).
 ///
 /// # Examples
+// This test is ignored because we don't actually want to include /www/static while building
+// doctests...
 /// ```ignore
 /// use static_dir::static_dir;
 /// use warp::Filter;
@@ -52,12 +54,19 @@ pub use include_dir::{Dir, File};
 /// // - `GET /static/app.js` would serve the file `/www/static/app.js`
 /// // - `GET /static/css/app.css` would serve the file `/www/static/css/app.css`
 /// ```
+// The following makes sure the macro compiles when invoked.
+/// ```
+/// # use static_dir::static_dir;
+/// # use warp::Filter;
+/// #
+/// # let route = static_dir!("src");
+/// ```
 #[macro_export]
 macro_rules! static_dir {
     ($path:literal) => {{
-        static DIR: ::static_dir::Dir = ::static_dir::include_dir!($path);
+        static DIR: $crate::Dir<'static> = $crate::include_dir!($path);
 
-        ::static_dir::filter(&DIR)
+        $crate::dir(&DIR)
     }};
 }
 
