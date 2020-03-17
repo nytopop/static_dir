@@ -6,7 +6,7 @@ use headers::{
     AcceptRanges, ContentLength, ContentRange, ContentType, HeaderMapExt, IfModifiedSince, IfRange,
     IfUnmodifiedSince, LastModified, Range,
 };
-use http::StatusCode;
+use http::{HeaderMap, StatusCode};
 use hyper::Body;
 use once_cell::sync::Lazy;
 use proc_macro_hack::proc_macro_hack;
@@ -79,7 +79,12 @@ pub fn dir(dir: &'static Dir<'_>) -> impl Filter<Extract = (Response,), Error = 
         // use the unmatched tail to decide which path we're serving
         .and(tail().and_then(move |tail| ready(parse_path(tail, dir))))
         // extract conditional information for cached / range responses
-        .and(headers_cloned().map(parse_conds))
+        .and(headers_cloned().map(|h: HeaderMap| Conditionals {
+            if_modified_since: h.typed_get(),
+            if_unmodified_since: h.typed_get(),
+            if_range: h.typed_get(),
+            range: h.typed_get(),
+        }))
         // reply with the file's content, if it exists
         .and_then(move |path, conds| ready(reply(dir, path, conds)))
 }
@@ -103,15 +108,6 @@ struct Conditionals {
     if_unmodified_since: Option<IfUnmodifiedSince>,
     if_range: Option<IfRange>,
     range: Option<Range>,
-}
-
-fn parse_conds<H: HeaderMapExt>(h: H) -> Conditionals {
-    Conditionals {
-        if_modified_since: h.typed_get(),
-        if_unmodified_since: h.typed_get(),
-        if_range: h.typed_get(),
-        range: h.typed_get(),
-    }
 }
 
 enum Cond {
@@ -174,7 +170,7 @@ fn bytes_range(range: Range, max_len: u64) -> Option<(u64, u64)> {
 fn reply(dir: &'static Dir<'_>, path: PathBuf, conds: Conditionals) -> Result<Response, Rejection> {
     if let Some(file) = dir.get_file(&*path) {
         log::debug!("serving: {:?}", path);
-        Ok(reply_conditional(file.contents(), path.as_ref(), conds))
+        Ok(reply_conditional(file.contents(), &*path, conds))
     } else {
         log::warn!("file not found: {:?}", path);
         Err(reject::not_found())
@@ -185,11 +181,13 @@ fn reply_conditional(buf: &'static [u8], path: &Path, conds: Conditionals) -> Re
     static SYS_TIME: Lazy<SystemTime> = Lazy::new(|| SystemTime::now());
     static LAST_MOD: Lazy<LastModified> = Lazy::new(|| (*SYS_TIME).into());
 
+    let len = buf.len() as u64;
+
     match conds.check(&SYS_TIME, &LAST_MOD) {
         Cond::WithBody(Some(range)) => match bytes_range(range, buf.len() as u64) {
-            Some((0, e)) if e == buf.len() as u64 => reply_full(buf, path, *LAST_MOD),
+            Some((0, e)) if e == len => reply_full(buf, path, *LAST_MOD),
             Some(range) => reply_range(buf, range, path, *LAST_MOD),
-            None => reply_unsatisfiable(buf.len() as u64),
+            None => reply_unsatisfiable(len),
         },
         Cond::WithBody(None) => reply_full(buf, path, *LAST_MOD),
         Cond::NoBody(resp) => resp,
