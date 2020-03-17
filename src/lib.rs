@@ -211,7 +211,6 @@ fn reply_range(
 {
     let len = e - s;
     let buf = &buf[s as usize..e as usize];
-    assert_eq!(len, buf.len() as u64);
 
     let mut resp = Response::new(Body::from(buf));
     *resp.status_mut() = StatusCode::PARTIAL_CONTENT;
