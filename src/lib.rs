@@ -1,7 +1,7 @@
 //! A crate for embedding static assets into warp webservers.
 #![warn(rust_2018_idioms, missing_docs)]
 
-use futures::future::{self, Ready};
+use futures::future::ready;
 use headers::{
     AcceptRanges, ContentLength, ContentRange, ContentType, HeaderMapExt, IfModifiedSince, IfRange,
     IfUnmodifiedSince, LastModified, Range,
@@ -16,7 +16,7 @@ use std::{
 };
 use warp::{
     filters::header::headers_cloned,
-    path::{self, Tail},
+    path::{tail, Tail},
     reject::{self, Rejection},
     reply::Response,
     Filter,
@@ -74,19 +74,14 @@ macro_rules! static_dir {
 /// Creates a [Filter][warp::Filter] that serves an included directory.
 ///
 /// See the documentation of [static_dir] for details.
-pub fn filter(
-    dir: &'static Dir<'_>,
-) -> impl Filter<Extract = (Response,), Error = Rejection> + Clone {
+pub fn dir(dir: &'static Dir<'_>) -> impl Filter<Extract = (Response,), Error = Rejection> + Clone {
     warp::get()
-        .and(path_from_tail(dir))
-        .and(headers_cloned().map(conds))
-        .and_then(move |path, conds| reply(dir, path, conds))
-}
-
-fn path_from_tail(
-    d: &'static Dir<'_>,
-) -> impl Filter<Extract = (PathBuf,), Error = Rejection> + Clone {
-    path::tail().and_then(move |tail| future::ready(parse_path(tail, &d)))
+        // use the unmatched tail to decide which path we're serving
+        .and(tail().and_then(move |tail| ready(parse_path(tail, dir))))
+        // extract conditional information for cached / range responses
+        .and(headers_cloned().map(parse_conds))
+        // reply with the file's content, if it exists
+        .and_then(move |path, conds| ready(reply(dir, path, conds)))
 }
 
 fn parse_path(tail: Tail, dir: &Dir<'_>) -> Result<PathBuf, Rejection> {
@@ -108,6 +103,15 @@ struct Conditionals {
     if_unmodified_since: Option<IfUnmodifiedSince>,
     if_range: Option<IfRange>,
     range: Option<Range>,
+}
+
+fn parse_conds<H: HeaderMapExt>(h: H) -> Conditionals {
+    Conditionals {
+        if_modified_since: h.typed_get(),
+        if_unmodified_since: h.typed_get(),
+        if_range: h.typed_get(),
+        range: h.typed_get(),
+    }
 }
 
 enum Cond {
@@ -141,21 +145,6 @@ impl Conditionals {
 
         Cond::WithBody(self.range)
     }
-
-    fn serve(self, buf: &'static [u8], path: &Path) -> Response {
-        static SYS_TIME: Lazy<SystemTime> = Lazy::new(|| SystemTime::now());
-        static LAST_MOD: Lazy<LastModified> = Lazy::new(|| (*SYS_TIME).into());
-
-        match self.check(&SYS_TIME, &LAST_MOD) {
-            Cond::WithBody(Some(range)) => match bytes_range(range, buf.len() as u64) {
-                Some((0, e)) if e == buf.len() as u64 => reply_full(buf, path, *LAST_MOD),
-                Some(range) => reply_range(buf, range, path, *LAST_MOD),
-                None => reply_unsatisfiable(buf.len() as u64),
-            },
-            Cond::WithBody(None) => reply_full(buf, path, *LAST_MOD),
-            Cond::NoBody(resp) => resp,
-        }
-    }
 }
 
 fn bytes_range(range: Range, max_len: u64) -> Option<(u64, u64)> {
@@ -188,27 +177,42 @@ fn bytes_range(range: Range, max_len: u64) -> Option<(u64, u64)> {
     }
 }
 
-fn conds<H: HeaderMapExt>(h: H) -> Conditionals {
-    Conditionals {
-        if_modified_since: h.typed_get(),
-        if_unmodified_since: h.typed_get(),
-        if_range: h.typed_get(),
-        range: h.typed_get(),
-    }
-}
-
-type Filtered<T> = Ready<Result<T, Rejection>>;
-
-fn reply(dir: &'static Dir<'_>, path: PathBuf, conds: Conditionals) -> Filtered<Response> {
-    let r = if let Some(file) = dir.get_file(&*path) {
+fn reply(dir: &'static Dir<'_>, path: PathBuf, conds: Conditionals) -> Result<Response, Rejection> {
+    if let Some(file) = dir.get_file(&*path) {
         log::debug!("static_dir: serving: {:?}", path);
-        Ok(conds.serve(file.contents(), path.as_ref()))
+        Ok(reply_conditional(file.contents(), path.as_ref(), conds))
     } else {
         log::warn!("static_dir: file not found: {:?}", path);
         Err(reject::not_found())
-    };
+    }
+}
 
-    future::ready(r)
+fn reply_conditional(buf: &'static [u8], path: &Path, conds: Conditionals) -> Response {
+    static SYS_TIME: Lazy<SystemTime> = Lazy::new(|| SystemTime::now());
+    static LAST_MOD: Lazy<LastModified> = Lazy::new(|| (*SYS_TIME).into());
+
+    match conds.check(&SYS_TIME, &LAST_MOD) {
+        Cond::WithBody(Some(range)) => match bytes_range(range, buf.len() as u64) {
+            Some((0, e)) if e == buf.len() as u64 => reply_full(buf, path, *LAST_MOD),
+            Some(range) => reply_range(buf, range, path, *LAST_MOD),
+            None => reply_unsatisfiable(buf.len() as u64),
+        },
+        Cond::WithBody(None) => reply_full(buf, path, *LAST_MOD),
+        Cond::NoBody(resp) => resp,
+    }
+}
+
+fn reply_full(buf: &'static [u8], path: &Path, last_mod: LastModified) -> Response {
+    let mut resp = Response::new(buf.into());
+    let hdrs = resp.headers_mut();
+
+    hdrs.typed_insert(ContentLength(buf.len() as u64));
+    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    hdrs.typed_insert(ContentType::from(mime));
+    hdrs.typed_insert(AcceptRanges::bytes());
+    hdrs.typed_insert(last_mod);
+
+    resp
 }
 
 fn reply_range(
@@ -228,19 +232,6 @@ fn reply_range(
     hdrs.typed_insert(ContentRange::bytes(s..e, len).unwrap());
     hdrs.typed_insert(ContentLength(len));
 
-    let mime = mime_guess::from_path(path).first_or_octet_stream();
-    hdrs.typed_insert(ContentType::from(mime));
-    hdrs.typed_insert(AcceptRanges::bytes());
-    hdrs.typed_insert(last_mod);
-
-    resp
-}
-
-fn reply_full(buf: &'static [u8], path: &Path, last_mod: LastModified) -> Response {
-    let mut resp = Response::new(buf.into());
-    let hdrs = resp.headers_mut();
-
-    hdrs.typed_insert(ContentLength(buf.len() as u64));
     let mime = mime_guess::from_path(path).first_or_octet_stream();
     hdrs.typed_insert(ContentType::from(mime));
     hdrs.typed_insert(AcceptRanges::bytes());
