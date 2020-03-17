@@ -90,7 +90,7 @@ fn parse_path(tail: Tail, dir: &Dir<'_>) -> Result<PathBuf, Rejection> {
         .map(|path| path.split('/').collect())?;
 
     if path.parent().is_none() || dir.get_dir(&*path).is_some() {
-        log::debug!("static_dir: appending index.html to {:?}", path);
+        log::debug!("appending index.html to {:?}", path);
         path.push("index.html");
     }
 
@@ -167,22 +167,16 @@ fn bytes_range(range: Range, max_len: u64) -> Option<(u64, u64)> {
     if start < end && end <= max_len {
         Some((start, end))
     } else {
-        log::trace!(
-            "static_dir: unsatisfiable byte range: {}-{}/{}",
-            start,
-            end,
-            max_len
-        );
         Some((0, max_len))
     }
 }
 
 fn reply(dir: &'static Dir<'_>, path: PathBuf, conds: Conditionals) -> Result<Response, Rejection> {
     if let Some(file) = dir.get_file(&*path) {
-        log::debug!("static_dir: serving: {:?}", path);
+        log::debug!("serving: {:?}", path);
         Ok(reply_conditional(file.contents(), path.as_ref(), conds))
     } else {
-        log::warn!("static_dir: file not found: {:?}", path);
+        log::warn!("file not found: {:?}", path);
         Err(reject::not_found())
     }
 }
