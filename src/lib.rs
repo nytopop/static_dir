@@ -59,7 +59,7 @@ pub use include_dir::{Dir, File};
 /// # use static_dir::static_dir;
 /// # use warp::Filter;
 /// #
-/// # let route = static_dir!("src");
+/// # let route = warp::path("static").and(static_dir!("src"));
 /// ```
 #[macro_export]
 macro_rules! static_dir {
@@ -74,7 +74,9 @@ macro_rules! static_dir {
 /// Creates a [Filter][warp::Filter] that serves an included directory.
 ///
 /// See the documentation of [static_dir] for details.
-pub fn dir(dir: &'static Dir<'_>) -> impl Filter<Extract = (Response,), Error = Rejection> + Clone {
+pub fn dir(
+    dir: &'static Dir<'_>,
+) -> impl Filter<Extract = (Response,), Error = Rejection> + Clone + 'static {
     warp::get()
         // use the unmatched tail to decide which path we're serving
         .and(tail().and_then(move |tail| ready(parse_path(tail, dir))))
