@@ -11,14 +11,12 @@ documentation = "https://docs.rs/static_dir"
 keywords = ["warp", "web", "static", "assets", "include"]
 
 [dependencies]
-warp = "0.2"
+warp = "0.3"
 log = "0.4"
-include_dir = "0.5"
-proc-macro-hack = "0.5"
-urlencoding = "1.0"
+include_dir = { version = "0.6", default-features = false }
+urlencoding = "1.1"
 headers = "0.3"
-hyper = "0.13"
+hyper = "0.14"
 http = "0.2"
 once_cell = "1.3"
 mime_guess = "2.0"
-futures = "0.3"

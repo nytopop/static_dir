@@ -1,7 +1,6 @@
 //! A crate for embedding static assets into warp webservers.
 #![warn(rust_2018_idioms, missing_docs)]
 
-use futures::future::ready;
 use headers::{
     AcceptRanges, ContentLength, ContentRange, ContentType, HeaderMapExt, IfModifiedSince, IfRange,
     IfUnmodifiedSince, LastModified, Range,
@@ -9,7 +8,7 @@ use headers::{
 use http::{HeaderMap, StatusCode};
 use hyper::Body;
 use once_cell::sync::Lazy;
-use proc_macro_hack::proc_macro_hack;
+use std::future::ready;
 use std::{
     path::{Path, PathBuf},
     time::SystemTime,
@@ -23,7 +22,6 @@ use warp::{
 };
 
 #[doc(hidden)]
-#[proc_macro_hack]
 pub use include_dir::include_dir;
 
 #[doc(hidden)]
@@ -70,7 +68,6 @@ macro_rules! static_dir {
     }};
 }
 
-#[doc(hidden)]
 /// Creates a [Filter][warp::Filter] that serves an included directory.
 ///
 /// See the documentation of [static_dir] for details.
@@ -214,8 +211,7 @@ fn reply_range(
     (s, e): (u64, u64),
     path: &Path,
     last_mod: LastModified,
-) -> Response
-{
+) -> Response {
     let len = e - s;
     let buf = &buf[s as usize..e as usize];
 
